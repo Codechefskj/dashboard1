@@ -1,7 +1,7 @@
 {
   "name": "design-studio-voice",
   "version": "1.0.0",
-  "description": "Voice dashboard for the Agentic design agent (same API calls as the WhatsApp bot)",
+  "description": "Voice and expiry-aware inventory dashboard for the Agentic merchant design service",
   "main": "server.js",
   "scripts": { "start": "node server.js", "dev": "node --watch server.js", "test": "node --test test/server.test.js" },
   "dependencies": {

@@ -1,3 +1,7 @@
+databases:
+  - name: agentic-voice-dashboard-db
+    plan: free
+
 services:
   - type: web
     name: agentic-voice-dashboard
@@ -19,6 +23,10 @@ services:
       - key: DASHBOARD_MERCHANT_ID
         value: dashboard
       - key: DATABASE_URL
-        sync: false
+        fromDatabase:
+          name: agentic-voice-dashboard-db
+          property: connectionString
       - key: DATABASE_SSL
         value: "true"
+      - key: INVENTORY_SCAN_INTERVAL_MS
+        value: "86400000"
