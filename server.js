@@ -30,7 +30,6 @@ const cfg = {
   dashboardToken: process.env.DASHBOARD_TOKEN || '',
   merchantId: process.env.DASHBOARD_MERCHANT_ID || 'dashboard',
   timeoutMs: Number(process.env.AGENTIC_REQUEST_TIMEOUT_MS || 120000),
-  inventoryScanIntervalMs: Math.max(60_000, Number(process.env.INVENTORY_SCAN_INTERVAL_MS || 24 * 60 * 60 * 1000)),
   dataDir: path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data')),
   databaseUrl: process.env.DATABASE_URL || '',
   databaseSsl: String(process.env.DATABASE_SSL || 'true').toLowerCase() !== 'false',
@@ -508,6 +507,13 @@ function reconcileCampaignSafety() {
       campaign.status = campaign.status === 'PUBLISHED' ? 'ENDED' : 'BLOCKED';
       campaign.error = check.blockedReasons.join('. ');
       campaign.updatedAt = now();
+    } else if (campaign.status === 'GENERATING' && campaign.designId) {
+      // Recover older/in-flight records where a preview was stored but the
+      // campaign status update was interrupted. The merchant must see the
+      // approval controls as soon as a safe design exists.
+      campaign.status = 'READY';
+      campaign.error = null;
+      campaign.updatedAt = now();
     } else if (campaign.status === 'BLOCKED' && campaign.designId) {
       campaign.status = 'READY';
       campaign.error = null;
@@ -792,7 +798,7 @@ api.get('/state', (_req, res) => {
     jobs: state.jobs.slice(0, 40),
   });
 });
-api.get('/inventory', (_req, res) => res.json(publicInventory()));
+api.get('/inventory', (_req, res) => { reconcileCampaignSafety(); res.json(publicInventory()); });
 api.post('/inventory/products', upload.single('image'), wrap(async (req, res) => {
   const file = req.file;
   if (file && !['image/png', 'image/jpeg', 'image/webp'].includes(file.mimetype)) throw new Error('Product photo must be PNG, JPEG or WebP.');
@@ -978,9 +984,6 @@ app.get('/health', (_req, res) => res.send('OK'));
 const host = cfg.dashboardToken ? '0.0.0.0' : '127.0.0.1';
 async function start() {
   await initPersistence();
-  recordInventoryScan();
-  const inventoryTimer = setInterval(recordInventoryScan, cfg.inventoryScanIntervalMs);
-  inventoryTimer.unref();
   app.listen(cfg.port, host, () => {
     console.log(`🎙️  Design Studio running:  http://localhost:${cfg.port}`);
     console.log(`🔗 Agentic: ${cfg.agenticUrl}   merchantId: "${cfg.merchantId}"`);

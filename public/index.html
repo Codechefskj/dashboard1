@@ -71,62 +71,61 @@ a.btn { color: inherit; text-decoration: none; }
 .mode-switch button { height: 30px; padding: 0 12px; border-radius: 9px; color: var(--ink-2); font-size: 12.5px; }
 .mode-switch button.active { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
 
-/* ---------- inventory workspace ---------- */
-.inventory-page { min-height: 0; overflow: auto; padding: 26px; }
-.inventory-shell { width: min(1240px, 100%); margin: 0 auto; display: grid; gap: 18px; }
-.inventory-hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; }
-.inventory-hero .eyebrow { color: var(--accent); font: 500 11px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
-.inventory-hero h2 { margin: 5px 0 3px; font-size: clamp(26px, 4vw, 38px); line-height: 1.15; letter-spacing: -.03em; }
-.inventory-hero p { margin: 0; color: var(--ink-2); }
-.inventory-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
-.inv-stats { display: grid; grid-template-columns: repeat(5, minmax(130px, 1fr)); gap: 10px; }
-.inv-stat, .inv-panel { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; }
-.inv-stat { padding: 16px; }
-.inv-stat span { display: block; color: var(--ink-3); font: 500 10.5px var(--mono); text-transform: uppercase; letter-spacing: .07em; }
-.inv-stat b { display: block; font-size: 26px; margin-top: 4px; }
-.inv-grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(320px, .65fr); gap: 18px; align-items: start; }
-.inv-panel { overflow: hidden; }
-.inv-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 15px 18px; border-bottom: 1px solid var(--line); }
-.inv-panel-head h3 { margin: 0; font-size: 15px; }
-.inv-panel-head small { color: var(--ink-3); }
-.inv-list { display: grid; }
-.candidate, .product-row { display: grid; gap: 12px; padding: 15px 18px; border-bottom: 1px solid var(--line); }
-.candidate:last-child, .product-row:last-child { border-bottom: 0; }
-.candidate { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
-.candidate h4, .product-row h4 { margin: 0 0 3px; font-size: 14px; }
-.inv-meta { display: flex; flex-wrap: wrap; gap: 6px 12px; color: var(--ink-2); font-size: 12px; }
+/* ---------- inventory campaign conversation ---------- */
+.inventory-page { min-height: 0; overflow-y: auto; scroll-behavior: smooth; }
+.inventory-shell { width: min(780px, 100%); min-height: 100%; margin: 0 auto; padding: 34px 24px 80px; }
+.inventory-intro { margin: 0 0 28px 46px; }
+.inventory-intro .eyebrow { color: var(--accent); font: 500 11px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+.inventory-intro h2 { margin: 7px 0 5px; font-size: clamp(25px, 4vw, 36px); line-height: 1.15; letter-spacing: -.03em; }
+.inventory-intro p { margin: 0; color: var(--ink-2); }
+.inventory-thread { display: flex; flex-direction: column; gap: 22px; }
+.inv-turn { display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 14px; align-items: start; animation: rise .25s ease-out; }
+.inv-turn.user { display: flex; justify-content: flex-end; }
+.inv-avatar { width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center; color: var(--accent-ink); background: linear-gradient(135deg, var(--accent), var(--accent-2)); font-weight: 700; }
+.inv-content { min-width: 0; padding-top: 3px; }
+.inv-content > p { margin: 0 0 10px; color: var(--ink-2); }
+.inv-content > p strong { color: var(--ink); }
+.inv-user-bubble { max-width: 75%; padding: 11px 15px; border-radius: 18px 18px 5px 18px; color: var(--me-ink); background: var(--me); }
+.scan-line { display: flex; align-items: center; gap: 10px; color: var(--ink); font-weight: 500; }
+.scan-spinner { width: 17px; height: 17px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .85s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.scan-meta { margin-top: 5px; color: var(--ink-3); font: 400 11px var(--mono); }
+.recommendation-card, .offer-card, .campaign-card { overflow: hidden; border: 1px solid var(--line); border-radius: 18px; background: var(--panel); box-shadow: var(--shadow); }
+.recommendation-card { padding: 18px; }
+.recommendation-head, .campaign-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.recommendation-card h3, .campaign-card h3 { margin: 0; font-size: 17px; }
+.recommendation-card .reason { margin: 6px 0 14px; color: var(--ink-2); font-size: 13px; }
+.inv-meta { display: flex; flex-wrap: wrap; gap: 7px 13px; color: var(--ink-2); font-size: 12px; }
 .inv-meta code { font-family: var(--mono); color: var(--ink-2); }
 .tier { display: inline-flex; height: 23px; align-items: center; padding: 0 8px; border-radius: 99px; font: 600 10px var(--mono); letter-spacing: .05em; }
 .tier.URGENT,.tier.EXPIRED { color: var(--bad); background: var(--bad-soft); }
 .tier.STRONG { color: var(--warn); background: var(--warn-soft); }
 .tier.SMALL,.tier.MONITOR { color: var(--accent); background: var(--info-soft); }
-.blocked-note { color: var(--bad); margin-top: 5px; font-size: 11.5px; }
-.empty-inv { color: var(--ink-2); text-align: center; padding: 32px 18px; }
-.campaigns { display: grid; gap: 10px; padding: 12px; }
-.campaign { border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: var(--panel-2); }
-.campaign img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; background: var(--panel-3); }
-.campaign-body { padding: 12px; }
-.campaign-top { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
-.campaign h4 { margin: 0; font-size: 13px; }
-.campaign p { color: var(--ink-2); font-size: 11.5px; margin: 5px 0 10px; }
-.campaign-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
-.campaign-buttons .btn { height: 34px; padding: 0 10px; font-size: 11.5px; }
-.inv-products { grid-column: 1 / -1; }
-.product-row { grid-template-columns: minmax(180px, 1fr) minmax(0, 2fr) auto; align-items: center; }
-.stock-edit { display: flex; gap: 6px; }
-dialog { color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 20px; padding: 0; width: min(620px, calc(100% - 28px)); box-shadow: var(--shadow); }
-dialog::backdrop { background: rgba(0,0,0,.72); }
-.dialog-head { display: flex; align-items: center; justify-content: space-between; padding: 17px 20px; border-bottom: 1px solid var(--line); }
-.dialog-head h3 { margin: 0; }
-.dialog-body { padding: 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 14px; max-height: 72vh; overflow: auto; }
-.dialog-body .wide { grid-column: 1 / -1; }
-.dialog-body label { display: grid; gap: 6px; color: var(--ink-2); font-size: 11.5px; }
-.dialog-body input, .dialog-body textarea, .dialog-body select { width: 100%; background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); border-radius: 10px; padding: 10px 11px; font: inherit; }
-.dialog-body .check-row { display: flex; align-items: center; gap: 8px; }
-.dialog-body .check-row input { width: auto; }
-.offer-help { color: var(--ink-3); font-size: 11px; margin: -5px 0 0; }
+.recommendation-actions, .campaign-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.offer-card { padding: 18px; }
+.offer-card h3 { margin: 0 0 4px; }
+.offer-help { color: var(--ink-3); font-size: 11.5px; margin: 0 0 14px; }
+.offer-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 13px; }
+.offer-grid .wide { grid-column: 1 / -1; }
+.offer-grid label { display: grid; gap: 6px; color: var(--ink-2); font-size: 11.5px; }
+.offer-grid input, .offer-grid textarea, .offer-grid select { width: 100%; background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); border-radius: 10px; padding: 10px 11px; font: inherit; }
+.offer-grid .check-row { display: flex; align-items: center; gap: 8px; }
+.offer-grid .check-row input { width: auto; }
 .field-hidden { display: none !important; }
-.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 20px; border-top: 1px solid var(--line); }
+.offer-submit { display: flex; justify-content: flex-end; margin-top: 16px; }
+.campaign-card img { display: block; width: 100%; max-height: 620px; object-fit: contain; background: var(--panel-2); border-bottom: 1px solid var(--line); }
+.campaign-body { padding: 18px; }
+.campaign-copy { color: var(--ink-2); font-size: 12.5px; margin: 8px 0 0; }
+.blocked-note { color: var(--bad); margin-top: 7px; font-size: 12px; }
+.revision-box { display: grid; gap: 8px; margin-top: 12px; }
+.revision-box textarea { min-height: 78px; resize: vertical; background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); border-radius: 12px; padding: 11px; font: inherit; }
+.chip { display: inline-flex; align-items: center; gap: 6px; height: 23px; padding: 0 9px; border-radius: 99px; font-size: 11.5px; font-weight: 500; white-space: nowrap; }
+.chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.chip.pending { background: var(--info-soft); color: var(--accent); }
+.chip.ok { background: var(--ok-soft); color: var(--ok); }
+.chip.warn { background: var(--warn-soft); color: var(--warn); }
+.chip.bad { background: var(--bad-soft); color: var(--bad); }
+.empty-inv { padding: 18px; color: var(--ink-2); border: 1px dashed var(--line); border-radius: 16px; }
 
 /* ---------- layout ---------- */
 .app { height: 100dvh; display: grid; grid-template-rows: auto minmax(0, 1fr); grid-template-columns: minmax(0, 1fr); }
@@ -312,13 +311,11 @@ dialog::backdrop { background: rgba(0,0,0,.72); }
   .mic-help { display: none; }
   .controls { justify-content: space-between; }
   .mode-switch button { padding: 0 8px; }
-  .inventory-page { padding: 16px 12px; }
-  .inventory-hero { align-items: flex-start; flex-direction: column; }
-  .inventory-actions { justify-content: flex-start; }
-  .inv-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .inv-grid { grid-template-columns: 1fr; }
-  .inv-products { grid-column: auto; }
-  .product-row { grid-template-columns: 1fr; }
+  .inventory-shell { padding: 24px 14px 56px; }
+  .inventory-intro { margin-left: 46px; }
+  .offer-grid { grid-template-columns: 1fr; }
+  .offer-grid .wide { grid-column: auto; }
+  .inv-user-bubble { max-width: 90%; }
 }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 </style>
@@ -395,129 +392,16 @@ dialog::backdrop { background: rgba(0,0,0,.72); }
 
   <section class="inventory-page hidden" id="inventoryPage">
     <div class="inventory-shell">
-      <div class="inventory-hero">
-        <div><div class="eyebrow">Expiry-aware inventory</div><h2>Turn ageing stock into timely campaigns.</h2><p>Monitor batches, protect customers, and create merchant-approved promotions.</p></div>
-        <div class="inventory-actions">
-          <button class="btn btn-ghost" id="inventoryRules">Promotion rules</button>
-          <a class="btn btn-ghost" href="/inventory-template.csv" download>CSV template</a>
-          <button class="btn btn-ghost" id="inventoryImport">Import CSV</button>
-          <input type="file" id="inventoryCsv" accept=".csv,text/csv" hidden>
-          <button class="btn btn-ghost" id="inventoryScan">Scan now</button>
-          <button class="btn btn-ghost" id="inventoryAddBatch">Add batch</button>
-          <button class="btn btn-primary" id="inventoryAdd">Add product</button>
-        </div>
+      <div class="inventory-intro">
+        <div class="eyebrow">Inventory campaign assistant</div>
+        <h2>Let’s rescue the right stock.</h2>
+        <p>Run a scan when you’re ready. I’ll recommend one product and guide its campaign through approval.</p>
       </div>
-      <div class="inv-stats" id="inventoryStats"></div>
-      <div class="inv-grid">
-        <section class="inv-panel">
-          <div class="inv-panel-head"><div><h3>Expiry opportunities</h3><small id="scanTime">Not scanned yet</small></div></div>
-          <div class="inv-list" id="candidateList"></div>
-        </section>
-        <section class="inv-panel">
-          <div class="inv-panel-head"><div><h3>Campaigns</h3><small>Approval is always required</small></div></div>
-          <div class="campaigns" id="campaignList"></div>
-        </section>
-        <section class="inv-panel inv-products">
-          <div class="inv-panel-head"><div><h3>Products and batches</h3><small>Expiry is tracked for each batch</small></div></div>
-          <div class="inv-list" id="productList"></div>
-        </section>
-      </div>
+      <div class="inventory-thread" id="inventoryThread" aria-live="polite"></div>
     </div>
   </section>
 </div>
 <div class="toasts" id="toasts"></div>
-
-<dialog id="productDialog">
-  <form id="productForm">
-    <div class="dialog-head"><h3>Add product and batch</h3><button type="button" class="icon-btn" data-close="productDialog">×</button></div>
-    <div class="dialog-body">
-      <label>Product name<input name="name" required placeholder="Maggi Masala Noodles"></label>
-      <label>SKU or barcode<input name="sku" placeholder="MAGGI-70G"></label>
-      <label>Brand<input name="brand" placeholder="Maggi"></label>
-      <label>Category<input name="category" placeholder="Packaged food"></label>
-      <label>Selling price (₹)<input name="price" type="number" min="0.01" step="0.01" required></label>
-      <label>Minimum promotional price (₹)<input name="minimumPrice" type="number" min="0" step="0.01"></label>
-      <label>Cost price (₹)<input name="costPrice" type="number" min="0" step="0.01"></label>
-      <label>Product image<input name="image" type="file" accept="image/png,image/jpeg,image/webp"></label>
-      <label>Batch number<input name="batchNumber" required></label>
-      <label>Quantity<input name="quantity" type="number" min="0" step="1" required></label>
-      <label>Expiry date<input name="expiryDate" type="date" required></label>
-      <label>Manufacturing date<input name="manufacturingDate" type="date"></label>
-      <label>Supplier<input name="supplier"></label>
-      <label>Storage location<input name="location"></label>
-      <label class="wide">Description<textarea name="description" rows="3" placeholder="Product details for advertisement generation"></textarea></label>
-    </div>
-    <div class="dialog-actions"><button type="button" class="btn btn-ghost" data-close="productDialog">Cancel</button><button class="btn btn-primary" type="submit">Save product</button></div>
-  </form>
-</dialog>
-
-<dialog id="offerDialog">
-  <form id="offerForm">
-    <div class="dialog-head"><h3>Create promotion</h3><button type="button" class="icon-btn" data-close="offerDialog">×</button></div>
-    <div class="dialog-body">
-      <input name="batchId" type="hidden">
-      <div class="wide"><b id="offerProductName">Product</b><p class="offer-help" id="offerSuggestion"></p></div>
-      <label class="wide">Offer type
-        <select name="offerType" id="offerType">
-          <option value="PERCENT_OFF">Percentage discount</option>
-          <option value="FIXED_PRICE">Special fixed price</option>
-          <option value="BUY_X_GET_Y">Buy X, get Y free</option>
-          <option value="MULTIBUY">Multi-buy bundle</option>
-        </select>
-      </label>
-      <label data-offer-field="PERCENT_OFF">Discount (%)<input name="discountPercent" type="number" min="1" max="90" step="1"></label>
-      <label data-offer-field="FIXED_PRICE">Special price (₹)<input name="promotionalPrice" type="number" min="0.01" step="0.01"></label>
-      <label data-offer-field="BUY_X_GET_Y">Customer buys<input name="buyQuantity" type="number" min="1" step="1" value="1"></label>
-      <label data-offer-field="BUY_X_GET_Y">Customer gets free<input name="freeQuantity" type="number" min="1" step="1" value="1"></label>
-      <label data-offer-field="MULTIBUY">Number of units<input name="bundleQuantity" type="number" min="2" step="1" value="2"></label>
-      <label data-offer-field="MULTIBUY">Total bundle price (₹)<input name="bundlePrice" type="number" min="0.01" step="0.01"></label>
-      <label>Coupon code<input name="couponCode" maxlength="30" placeholder="Leave blank to generate"></label>
-      <label>Maximum redemptions<input name="maxRedemptions" type="number" min="1" step="1" placeholder="No limit"></label>
-      <label>Offer starts<input name="offerStartsAt" type="date" required></label>
-      <label>Offer ends<input name="offerEndsAt" type="date" required></label>
-      <div class="wide"><span style="color:var(--ink-2);font-size:11.5px">Publish to</span><div style="display:flex;gap:18px;margin-top:8px"><label class="check-row"><input name="instagram" type="checkbox" checked> Instagram</label><label class="check-row"><input name="facebook" type="checkbox" checked> Facebook</label></div></div>
-      <p class="wide offer-help">The system checks minimum price, available stock and expiry before generation and again before publishing.</p>
-    </div>
-    <div class="dialog-actions"><button type="button" class="btn btn-ghost" data-close="offerDialog">Cancel</button><button class="btn btn-primary" type="submit">Generate campaign</button></div>
-  </form>
-</dialog>
-
-<dialog id="batchDialog">
-  <form id="batchForm">
-    <div class="dialog-head"><h3 id="batchDialogTitle">Add batch</h3><button type="button" class="icon-btn" data-close="batchDialog">×</button></div>
-    <div class="dialog-body">
-      <input name="batchId" type="hidden">
-      <label class="wide">Product<select name="productId" required></select></label>
-      <label>Batch number<input name="batchNumber" required></label>
-      <label>Quantity<input name="quantity" type="number" min="0" step="1" required></label>
-      <label>Expiry date<input name="expiryDate" type="date" required></label>
-      <label>Manufacturing date<input name="manufacturingDate" type="date"></label>
-      <label>Supplier<input name="supplier"></label>
-      <label>Storage location<input name="location"></label>
-      <label class="check-row"><input name="recalled" type="checkbox"> Recalled</label>
-      <label class="check-row"><input name="blocked" type="checkbox"> Block promotions</label>
-    </div>
-    <div class="dialog-actions"><button type="button" class="btn btn-ghost" data-close="batchDialog">Cancel</button><button class="btn btn-primary" type="submit">Save batch</button></div>
-  </form>
-</dialog>
-
-<dialog id="rulesDialog">
-  <form id="rulesForm">
-    <div class="dialog-head"><h3>Promotion rules</h3><button type="button" class="icon-btn" data-close="rulesDialog">×</button></div>
-    <div class="dialog-body">
-      <label>Scan window (days)<input name="scanDays" type="number" min="1" required></label>
-      <label>Small-discount window<input name="smallDiscountDays" type="number" min="1" required></label>
-      <label>Strong-discount window<input name="strongDiscountDays" type="number" min="1" required></label>
-      <label>Urgent window<input name="urgentDays" type="number" min="1" required></label>
-      <label>Small discount (%)<input name="smallDiscountPercent" type="number" min="0" max="90" required></label>
-      <label>Strong discount (%)<input name="strongDiscountPercent" type="number" min="0" max="90" required></label>
-      <label>Urgent discount (%)<input name="urgentDiscountPercent" type="number" min="0" max="90" required></label>
-      <label>Minimum stock<input name="minimumStock" type="number" min="0" required></label>
-      <p class="wide" style="color:var(--ink-2);margin:0">Expired, recalled, blocked, inactive and out-of-stock batches are always prevented from publishing.</p>
-    </div>
-    <div class="dialog-actions"><button type="button" class="btn btn-ghost" data-close="rulesDialog">Cancel</button><button class="btn btn-primary" type="submit">Save rules</button></div>
-  </form>
-</dialog>
 
 <script>
 (() => {
