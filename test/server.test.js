@@ -8,9 +8,9 @@ const { join } = require('node:path');
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-async function waitFor(check, timeoutMs = 8000) {
+async function waitFor(check, timeoutMs = 8000){
   const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
+  while (Date.now() - started < timeoutMs){
     try { if (await check()) return; } catch {}
     await sleep(80);
   }

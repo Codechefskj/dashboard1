@@ -35,7 +35,7 @@ const cfg = {
   databaseSsl: String(process.env.DATABASE_SSL || 'true').toLowerCase() !== 'false',
 };
 if (!cfg.agenticUrl || !cfg.serviceToken) {
-  console.error('❌ Set AGENTIC_API_URL and INTERNAL_SERVICE_TOKEN in .env (copy .env.example).');
+  console.error('âŒ Set AGENTIC_API_URL and INTERNAL_SERVICE_TOKEN in .env (copy .env.example).');
   process.exit(1);
 }
 
@@ -50,7 +50,28 @@ const blank = () => ({
 });
 let state = blank();
 try { state = { ...blank(), ...JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) }; } catch { /* first run */ }
-const pool = cfg.databaseUrl ? new Pool({ connectionString: cfg.databaseUrl, ssl: cfg.databaseSsl ? { rejectUnauthorized: false } : false }) : null;
+const pool = cfg.databaseUrl ? new Pool({
+  connectionString: cfg.databaseUrl,
+  ssl: cfg.databaseSsl ? { rejectUnauthorized: false } : false,
+  connectionTimeoutMillis: Number(process.env.DATABASE_CONNECT_TIMEOUT_MS || 10000),
+  idleTimeoutMillis: 30000,
+  max: 5,
+}) : null;
+let postgresEnabled = Boolean(pool);
+
+function writeStateToDisk() {
+  fs.mkdirSync(cfg.dataDir, { recursive: true });
+  const tempFile = STATE_FILE + '.tmp';
+  fs.writeFileSync(tempFile, JSON.stringify(state));
+  fs.renameSync(tempFile, STATE_FILE);
+}
+
+function switchToFilesystem(reason) {
+  if (!postgresEnabled) return;
+  postgresEnabled = false;
+  console.error('âš ï¸ PostgreSQL unavailable; switching to filesystem storage:', reason);
+  if (pool) pool.end().catch(() => {});
+}
 
 function normalizeLoadedState(value) {
   state = { ...blank(), ...(value || {}) };
@@ -60,12 +81,26 @@ function normalizeLoadedState(value) {
 }
 
 async function initPersistence() {
-  if (!pool) return normalizeLoadedState(state);
-  await pool.query('CREATE TABLE IF NOT EXISTS dashboard_state (id TEXT PRIMARY KEY, payload JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())');
-  await pool.query('CREATE TABLE IF NOT EXISTS dashboard_media (id TEXT PRIMARY KEY, mime_type TEXT NOT NULL, filename TEXT NOT NULL, bytes BYTEA NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())');
-  const result = await pool.query("SELECT payload FROM dashboard_state WHERE id = 'main'");
-  normalizeLoadedState(result.rows[0]?.payload || state);
-  console.log(JSON.stringify({ event: 'dashboard.persistence.ready', provider: 'postgres' }));
+  if (!pool) {
+    normalizeLoadedState(state);
+    console.log(JSON.stringify({ event: 'dashboard.persistence.ready', provider: 'filesystem', reason: 'DATABASE_URL is not set' }));
+    return;
+  }
+
+  try {
+    await pool.query('CREATE TABLE IF NOT EXISTS dashboard_state (id TEXT PRIMARY KEY, payload JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())');
+    await pool.query('CREATE TABLE IF NOT EXISTS dashboard_media (id TEXT PRIMARY KEY, mime_type TEXT NOT NULL, filename TEXT NOT NULL, bytes BYTEA NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())');
+    const result = await pool.query("SELECT payload FROM dashboard_state WHERE id = 'main'");
+    normalizeLoadedState(result.rows[0]?.payload || state);
+    console.log(JSON.stringify({ event: 'dashboard.persistence.ready', provider: 'postgres' }));
+  } catch (error) {
+    // Keep the web service alive if PostgreSQL DNS/network is temporarily unavailable.
+    // Filesystem storage on Render is ephemeral unless a persistent disk is mounted.
+    switchToFilesystem(error.message);
+    normalizeLoadedState(state);
+    writeStateToDisk();
+    console.log(JSON.stringify({ event: 'dashboard.persistence.ready', provider: 'filesystem', warning: 'PostgreSQL connection failed; data may not survive redeploys' }));
+  }
 }
 
 let saveTimer = null;
@@ -73,13 +108,16 @@ function save() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     try {
-      if (pool) {
+      if (postgresEnabled && pool) {
         await pool.query("INSERT INTO dashboard_state (id, payload, updated_at) VALUES ('main', $1::jsonb, NOW()) ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW()", [JSON.stringify(state)]);
       } else {
-        fs.writeFileSync(STATE_FILE + '.tmp', JSON.stringify(state));
-        fs.renameSync(STATE_FILE + '.tmp', STATE_FILE);
+        writeStateToDisk();
       }
-    } catch (e) { console.error('⚠️ Could not save state:', e.message); }
+    } catch (e) {
+      console.error('âš ï¸ Could not save state to PostgreSQL:', e.message);
+      switchToFilesystem(e.message);
+      try { writeStateToDisk(); } catch (diskError) { console.error('âŒ Could not save state to filesystem:', diskError.message); }
+    }
   }, 200);
 }
 const nid = () => state.seq++;
@@ -95,8 +133,16 @@ function addMessage(role, text, extra = {}) {
 }
 async function saveMedia(buffer, mimeType, filename) {
   const id = String(nid());
-  if (pool) await pool.query('INSERT INTO dashboard_media (id, mime_type, filename, bytes) VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO NOTHING', [id, mimeType, filename, buffer]);
-  else fs.writeFileSync(path.join(MEDIA_DIR, id), buffer);
+  if (postgresEnabled && pool) {
+    try {
+      await pool.query('INSERT INTO dashboard_media (id, mime_type, filename, bytes) VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO NOTHING', [id, mimeType, filename, buffer]);
+    } catch (error) {
+      switchToFilesystem(error.message);
+      fs.writeFileSync(path.join(MEDIA_DIR, id), buffer);
+    }
+  } else {
+    fs.writeFileSync(path.join(MEDIA_DIR, id), buffer);
+  }
   state.media[id] = { mimeType, filename };
   save();
   return id;
@@ -104,12 +150,21 @@ async function saveMedia(buffer, mimeType, filename) {
 async function readMedia(id) {
   const meta = state.media[id];
   if (!meta) throw Object.assign(new Error('Media not found'), { status: 404 });
-  if (pool) {
-    const result = await pool.query('SELECT bytes FROM dashboard_media WHERE id = $1', [String(id)]);
-    if (!result.rows[0]) throw Object.assign(new Error('Media not found'), { status: 404 });
-    return { buffer: result.rows[0].bytes, ...meta };
+  if (postgresEnabled && pool) {
+    try {
+      const result = await pool.query('SELECT bytes FROM dashboard_media WHERE id = $1', [String(id)]);
+      if (!result.rows[0]) throw Object.assign(new Error('Media not found'), { status: 404 });
+      return { buffer: result.rows[0].bytes, ...meta };
+    } catch (error) {
+      if (error.status === 404) throw error;
+      switchToFilesystem(error.message);
+    }
   }
-  return { buffer: fs.readFileSync(path.join(MEDIA_DIR, String(id))), ...meta };
+  try {
+    return { buffer: fs.readFileSync(path.join(MEDIA_DIR, String(id))), ...meta };
+  } catch {
+    throw Object.assign(new Error('Media is unavailable in filesystem fallback. Reconnect PostgreSQL to access previously stored media.'), { status: 503 });
+  }
 }
 
 /* --------------------------------------------------------- Agentic client */
@@ -148,7 +203,7 @@ async function agenticFeedback({ externalRef, action, feedback, messageId }) {
 }
 
 /* -------------------------------------------------- durable-ish job queue */
-// One job at a time, retried with backoff — mirrors integration-worker.ts.
+// One job at a time, retried with backoff â€” mirrors integration-worker.ts.
 const queue = [];
 let pumping = false;
 const MAX_ATTEMPTS = 6;
@@ -197,7 +252,7 @@ async function runItem(item) {
       item.after = Date.now() + Math.min(30_000, 2 ** job.attempts * 1000);
       queue.push(item);
     }
-    console.error(`❌ job ${job.id} (${job.kind}${job.action ? '/' + job.action : ''}) ${job.status}:`, job.lastError);
+    console.error(`âŒ job ${job.id} (${job.kind}${job.action ? '/' + job.action : ''}) ${job.status}:`, job.lastError);
     logEvent('dashboard.job.failed', { jobId: job.id, kind: job.kind, action: job.action || null, status: job.status, attempt: job.attempts, error: job.lastError });
   }
   job.updatedAt = now();
@@ -233,7 +288,7 @@ async function processInbound(p) {
     s.designJobId = r.job.id; s.status = 'AWAITING_APPROVAL';
     addMessage('agent', 'Got it. Designing now, the preview will show up on the right in a moment.');
   } else {
-    console.log('ℹ️ Agentic replied with:', JSON.stringify(r).slice(0, 300));
+    console.log('â„¹ï¸ Agentic replied with:', JSON.stringify(r).slice(0, 300));
   }
 }
 
@@ -260,7 +315,7 @@ function approve(id) {
   const d = getDesign(id);
   if (d.status !== 'PENDING') throw conflict('This design was already answered.');
   d.status = 'APPROVED'; d.respondedAt = now();
-  addMessage('agent', '✅ Approval received. Final exports and publishing are now being prepared.');
+  addMessage('agent', 'âœ… Approval received. Final exports and publishing are now being prepared.');
   const messageId = `dash-approve:${d.id}:${randomUUID()}`;
   addJob({ kind: 'AGENTIC_FEEDBACK', action: 'APPROVE_ALL', designId: d.id, label: 'Publishing' }, async () => {
     const r = await agenticFeedback({ externalRef: d.externalRef, action: 'APPROVE_ALL', messageId });
@@ -274,7 +329,7 @@ function approve(id) {
       const failed = deliveries.filter(item => item.status === 'FAILED').map(item => item.channel);
       const detail = delivered.length ? ` Published successfully to ${delivered.join(' and ')}.` : ' The image was approved and exported.';
       const failure = failed.length ? ` Publishing failed for ${failed.join(' and ')}; check the status details.` : '';
-      addMessage('agent', `🎉 Approved.${detail}${failure}`);
+      addMessage('agent', `ðŸŽ‰ Approved.${detail}${failure}`);
     }
   });
   save();
@@ -287,7 +342,7 @@ function requestChanges(id, feedback) {
   if (d.status !== 'PENDING') throw conflict('This design was already answered.');
   d.status = 'REJECTED'; d.feedback = feedback; d.respondedAt = now();
   addMessage('user', feedback, { note: `Changes for #${d.id}` });
-  addMessage('agent', '📝 Thanks for the feedback! Working on a new version now.');
+  addMessage('agent', 'ðŸ“ Thanks for the feedback! Working on a new version now.');
   const messageId = `dash-edit:${d.id}:${randomUUID()}`;
   addJob({ kind: 'AGENTIC_FEEDBACK', action: 'EDIT_SELECTED', designId: d.id, label: 'Revising' }, async () => {
     const r = await agenticFeedback({ externalRef: d.externalRef, action: 'EDIT_SELECTED', feedback, messageId });
@@ -321,7 +376,7 @@ async function handleVoiceCommand({ text, file, targetChannels }) {
     }
     if (/^(approve|approve it|approve and publish|publish|looks good|yes approve)(\s+it)?$/i.test(text)) {
       session.voicePendingAction = { type: 'APPROVE_ALL', designId: pending.id, createdAt: now() };
-      addMessage('agent', 'Please say “confirm publish” to approve this design and publish it, or say “cancel”.');
+      addMessage('agent', 'Please say â€œconfirm publishâ€ to approve this design and publish it, or say â€œcancelâ€.');
       save();
       return { kind: 'confirmation_required', designId: pending.id };
     }
@@ -378,7 +433,7 @@ const handlePreview = async (req, res) => {
     }
     res.json({ success: true, designId: design.id, status: design.status, handoffKey });
   } catch (e) {
-    console.error('❌ Preview handoff error:', e.message);
+    console.error('âŒ Preview handoff error:', e.message);
     res.status(400).json({ error: e.message });
   }
 };
@@ -396,7 +451,7 @@ api.use((req, res, next) => {
 });
 const wrap = fn => (req, res) => {
   Promise.resolve().then(() => fn(req, res)).catch(e => {
-    console.error('❌', e.message);
+    console.error('âŒ', e.message);
     res.status(e.status || 400).json({ error: e.message || 'Something went wrong' });
   });
 };
@@ -446,11 +501,11 @@ const host = cfg.dashboardToken ? '0.0.0.0' : '127.0.0.1';
 async function start() {
   await initPersistence();
   app.listen(cfg.port, host, () => {
-    console.log(`🎙️  Design Studio running:  http://localhost:${cfg.port}`);
-    console.log(`🔗 Agentic: ${cfg.agenticUrl}   merchantId: "${cfg.merchantId}"`);
-    console.log(`📥 Agentic dashboard handoff: <this server's public URL>/integrations/agentic/previews`);
-    console.log(`💾 Persistence: ${pool ? 'PostgreSQL' : cfg.dataDir}`);
-    if (!cfg.dashboardToken) console.log('🔒 No DASHBOARD_TOKEN set: listening on 127.0.0.1 only.');
+    console.log(`ðŸŽ™️ï¸  Design Studio running:  http://localhost:${cfg.port}`);
+    console.log(`ðŸ”— Agentic: ${cfg.agenticUrl}   merchantId: "${cfg.merchantId}"`);
+    console.log(`ðŸ“¥ Agentic dashboard handoff: <this server's public URL>/integrations/agentic/previews`);
+    console.log(`ðŸ’¾ Persistence: ${postgresEnabled ? 'PostgreSQL' : `filesystem (${cfg.dataDir})`}`);
+    if (!cfg.dashboardToken) console.log('ðŸ”’ No DASHBOARD_TOKEN set: listening on 127.0.0.1 only.');
   });
 }
-start().catch(error => { console.error('❌ Dashboard startup failed:', error); process.exit(1); });
+start().catch(error => { console.error('âŒ Dashboard startup failed:', error); process.exit(1); });
