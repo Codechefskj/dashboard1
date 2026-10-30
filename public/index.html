@@ -91,6 +91,10 @@ a.btn { color: inherit; text-decoration: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .scan-meta { margin-top: 5px; color: var(--ink-3); font: 400 11px var(--mono); }
 .recommendation-card, .offer-card, .campaign-card { overflow: hidden; border: 1px solid var(--line); border-radius: 18px; background: var(--panel); box-shadow: var(--shadow); }
+.scan-stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+.scan-stat { min-width: 0; padding: 12px 10px; border: 1px solid var(--line); border-radius: 13px; background: var(--panel); }
+.scan-stat b { display: block; font-size: 19px; line-height: 1.2; }
+.scan-stat span { display: block; margin-top: 5px; color: var(--ink-3); font: 500 9px var(--mono); letter-spacing: .04em; text-transform: uppercase; overflow-wrap: anywhere; }
 .recommendation-card { padding: 18px; }
 .recommendation-head, .campaign-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .recommendation-card h3, .campaign-card h3 { margin: 0; font-size: 17px; }
@@ -316,6 +320,7 @@ a.btn { color: inherit; text-decoration: none; }
   .offer-grid { grid-template-columns: 1fr; }
   .offer-grid .wide { grid-column: auto; }
   .inv-user-bubble { max-width: 90%; }
+  .scan-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 </style>

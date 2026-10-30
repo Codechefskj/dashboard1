@@ -36,6 +36,11 @@
     const when = inventory?.lastScanAt ? new Date(inventory.lastScanAt).toLocaleString() : 'No scan completed yet';
     return assistant(`<div class="scan-line">Inventory scanner is ready</div><p>Run a scan for a fresh recommendation. Nothing is generated or published until you choose the product and approve the design.</p><button class="btn btn-primary" id="runInventoryScan">Scan inventory</button><div class="scan-meta">Last scan: ${esc(when)}</div>`);
   }
+  function statsTurn() {
+    const summary = inventory.summary;
+    const stats = [['Products', summary.products], ['Units in stock', summary.units], ['Eligible offers', summary.expiringSoon], ['Safety blocks', summary.blocked], ['Campaigns', summary.campaigns]];
+    return assistant(`<p><strong>Inventory scan complete.</strong> Here is the current inventory report.</p><div class="scan-stats">${stats.map(([label, value]) => `<div class="scan-stat"><b>${esc(value)}</b><span>${esc(label)}</span></div>`).join('')}</div>`);
+  }
   function recommendationTurn({ product, batch }) {
     const rec = batch.recommendation;
     return assistant(`<p>I checked <strong>${esc(inventory.summary.products)} products</strong> and found ${esc(inventory.summary.expiringSoon)} eligible opportunities. This is the single best candidate right now.</p><article class="recommendation-card"><div class="recommendation-head"><div><h3>${esc(product.name)}</h3><div class="reason">Highest urgency with safe stock and a valid promotional margin.</div></div><span class="tier ${esc(rec.tier)}">${esc(rec.tier)}</span></div><div class="inv-meta"><span>Batch <code>${esc(batch.batchNumber)}</code></span><span>${esc(batch.quantity)} units</span><span>Expires ${esc(batch.expiryDate)}</span><span>${esc(rec.daysRemaining)} days left</span><span>${esc(rec.discountPercent)}% suggested</span></div><div class="recommendation-actions"><button class="btn btn-primary" data-select-product="${esc(batch.id)}">Use this product</button><button class="btn btn-ghost" id="rescanInventory">Scan again</button></div></article>`);
@@ -61,6 +66,7 @@
     const thread = $('inventoryThread'); if (!thread) return;
     if (!inventory) { thread.innerHTML = scanTurn(); bind(); return; }
     const campaign = currentCampaign(); let html = scanTurn();
+    if (hasScanned) html += statsTurn();
     if (campaign) html += campaignTurn(campaign);
     else if (hasScanned) {
       const selected = selectedCandidate(), best = bestCandidate();
