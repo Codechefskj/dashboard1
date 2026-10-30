@@ -17,6 +17,7 @@ const express = require('express');
 const multer = require('multer');
 const axios = require('axios');
 const FormData = require('form-data');
+const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
 const { randomUUID, timingSafeEqual } = require('crypto');
@@ -30,6 +31,8 @@ const cfg = {
   merchantId: process.env.DASHBOARD_MERCHANT_ID || 'dashboard',
   timeoutMs: Number(process.env.AGENTIC_REQUEST_TIMEOUT_MS || 120000),
   dataDir: path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data')),
+  databaseUrl: process.env.DATABASE_URL || '',
+  databaseSsl: String(process.env.DATABASE_SSL || 'true').toLowerCase() !== 'false',
 };
 if (!cfg.agenticUrl || !cfg.serviceToken) {
   console.error('❌ Set AGENTIC_API_URL and INTERNAL_SERVICE_TOKEN in .env (copy .env.example).');
@@ -43,26 +46,45 @@ fs.mkdirSync(MEDIA_DIR, { recursive: true });
 
 const blank = () => ({
   seq: 1, dseq: 1, messages: [], designs: [], jobs: [], media: {},
-  session: { status: 'COLLECTING', productDraftId: null, pendingQuestionId: null, designJobId: null },
+  session: { status: 'COLLECTING', productDraftId: null, pendingQuestionId: null, designJobId: null, voicePendingAction: null },
 });
 let state = blank();
 try { state = { ...blank(), ...JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) }; } catch { /* first run */ }
-state.dseq = Math.max(state.dseq || 1, ...state.designs.map(d => d.id + 1), 1);
-// Anything mid-flight when the server stopped is retried from scratch on restart.
-state.jobs.forEach(j => { if (['PENDING', 'PROCESSING', 'RETRY'].includes(j.status)) { j.status = 'FAILED'; j.lastError = 'Server restarted before this finished. Send it again.'; } });
+const pool = cfg.databaseUrl ? new Pool({ connectionString: cfg.databaseUrl, ssl: cfg.databaseSsl ? { rejectUnauthorized: false } : false }) : null;
+
+function normalizeLoadedState(value) {
+  state = { ...blank(), ...(value || {}) };
+  state.session = { ...blank().session, ...(state.session || {}) };
+  state.dseq = Math.max(state.dseq || 1, ...state.designs.map(d => d.id + 1), 1);
+  state.jobs.forEach(j => { if (['PENDING', 'PROCESSING', 'RETRY'].includes(j.status)) { j.status = 'FAILED'; j.lastError = 'Server restarted before this finished. Send it again.'; } });
+}
+
+async function initPersistence() {
+  if (!pool) return normalizeLoadedState(state);
+  await pool.query('CREATE TABLE IF NOT EXISTS dashboard_state (id TEXT PRIMARY KEY, payload JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())');
+  await pool.query('CREATE TABLE IF NOT EXISTS dashboard_media (id TEXT PRIMARY KEY, mime_type TEXT NOT NULL, filename TEXT NOT NULL, bytes BYTEA NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())');
+  const result = await pool.query("SELECT payload FROM dashboard_state WHERE id = 'main'");
+  normalizeLoadedState(result.rows[0]?.payload || state);
+  console.log(JSON.stringify({ event: 'dashboard.persistence.ready', provider: 'postgres' }));
+}
 
 let saveTimer = null;
 function save() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
+  saveTimer = setTimeout(async () => {
     try {
-      fs.writeFileSync(STATE_FILE + '.tmp', JSON.stringify(state));
-      fs.renameSync(STATE_FILE + '.tmp', STATE_FILE);
+      if (pool) {
+        await pool.query("INSERT INTO dashboard_state (id, payload, updated_at) VALUES ('main', $1::jsonb, NOW()) ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW()", [JSON.stringify(state)]);
+      } else {
+        fs.writeFileSync(STATE_FILE + '.tmp', JSON.stringify(state));
+        fs.renameSync(STATE_FILE + '.tmp', STATE_FILE);
+      }
     } catch (e) { console.error('⚠️ Could not save state:', e.message); }
   }, 200);
 }
 const nid = () => state.seq++;
 const now = () => new Date().toISOString();
+const logEvent = (event, details = {}) => console.log(JSON.stringify({ event, at: now(), ...details }));
 
 function addMessage(role, text, extra = {}) {
   const m = { id: nid(), role, text, createdAt: now(), ...extra };
@@ -71,24 +93,36 @@ function addMessage(role, text, extra = {}) {
   save();
   return m;
 }
-function saveMedia(buffer, mimeType, filename) {
+async function saveMedia(buffer, mimeType, filename) {
   const id = String(nid());
-  fs.writeFileSync(path.join(MEDIA_DIR, id), buffer);
+  if (pool) await pool.query('INSERT INTO dashboard_media (id, mime_type, filename, bytes) VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO NOTHING', [id, mimeType, filename, buffer]);
+  else fs.writeFileSync(path.join(MEDIA_DIR, id), buffer);
   state.media[id] = { mimeType, filename };
   save();
   return id;
 }
-const readMedia = id => ({ buffer: fs.readFileSync(path.join(MEDIA_DIR, String(id))), ...state.media[id] });
+async function readMedia(id) {
+  const meta = state.media[id];
+  if (!meta) throw Object.assign(new Error('Media not found'), { status: 404 });
+  if (pool) {
+    const result = await pool.query('SELECT bytes FROM dashboard_media WHERE id = $1', [String(id)]);
+    if (!result.rows[0]) throw Object.assign(new Error('Media not found'), { status: 404 });
+    return { buffer: result.rows[0].bytes, ...meta };
+  }
+  return { buffer: fs.readFileSync(path.join(MEDIA_DIR, String(id))), ...meta };
+}
 
 /* --------------------------------------------------------- Agentic client */
 // Same two calls as src/services/agentic.service.ts in the WhatsApp bot.
 const authHeader = { Authorization: `Bearer ${cfg.serviceToken}` };
 
-async function agenticProcessMessage({ messageId, text, productDraftId, questionId, file }) {
+async function agenticProcessMessage({ messageId, text, productDraftId, questionId, file, targetChannels }) {
   const form = new FormData();
   form.append('metadata', JSON.stringify({
     merchantId: cfg.merchantId,
-    conversationId: `whatsapp:${cfg.merchantId}`,
+    conversationId: `dashboard:${cfg.merchantId}`,
+    sourceChannel: 'dashboard',
+    targetChannels: Array.isArray(targetChannels) ? targetChannels : ['instagram', 'facebook'],
     messageId,
     productDraftId: productDraftId || undefined,
     questionId: questionId || undefined,
@@ -96,7 +130,7 @@ async function agenticProcessMessage({ messageId, text, productDraftId, question
   }));
   if (text) form.append('text', text);
   if (file) form.append('media', file.buffer, { filename: file.filename, contentType: file.mimeType });
-  const res = await axios.post(`${cfg.agenticUrl}/api/integrations/whatsapp/messages`, form, {
+  const res = await axios.post(`${cfg.agenticUrl}/api/integrations/dashboard/messages`, form, {
     headers: { ...authHeader, ...form.getHeaders(), 'idempotency-key': messageId },
     timeout: cfg.timeoutMs,
     maxBodyLength: 20 * 1024 * 1024,
@@ -106,7 +140,7 @@ async function agenticProcessMessage({ messageId, text, productDraftId, question
 
 async function agenticFeedback({ externalRef, action, feedback, messageId }) {
   const res = await axios.post(
-    `${cfg.agenticUrl}/api/integrations/whatsapp/jobs/${encodeURIComponent(externalRef)}/feedback`,
+    `${cfg.agenticUrl}/api/integrations/dashboard/jobs/${encodeURIComponent(externalRef)}/feedback`,
     { action, feedback, messageId },
     { headers: { ...authHeader, 'Content-Type': 'application/json', 'idempotency-key': messageId }, timeout: cfg.timeoutMs },
   );
@@ -145,9 +179,11 @@ async function pump() {
 async function runItem(item) {
   const { job } = item;
   job.status = 'PROCESSING'; job.attempts += 1; job.lastError = null; job.updatedAt = now();
+  logEvent('dashboard.job.processing', { jobId: job.id, kind: job.kind, action: job.action || null, attempt: job.attempts });
   try {
     await item.run(job);
     job.status = 'COMPLETED';
+    logEvent('dashboard.job.completed', { jobId: job.id, kind: job.kind, action: job.action || null, attempts: job.attempts });
   } catch (e) {
     const code = e.response?.status;
     const permanent = code && code >= 400 && code < 500 && ![408, 425, 429].includes(code);
@@ -162,6 +198,7 @@ async function runItem(item) {
       queue.push(item);
     }
     console.error(`❌ job ${job.id} (${job.kind}${job.action ? '/' + job.action : ''}) ${job.status}:`, job.lastError);
+    logEvent('dashboard.job.failed', { jobId: job.id, kind: job.kind, action: job.action || null, status: job.status, attempt: job.attempts, error: job.lastError });
   }
   job.updatedAt = now();
   save();
@@ -178,14 +215,14 @@ function onJobFailed(job) {
 /* -------------------------------------------- conversation (== bot worker) */
 async function processInbound(p) {
   const s = state.session;
-  const file = p.mediaId ? readMedia(p.mediaId) : undefined;
+  const file = p.mediaId ? await readMedia(p.mediaId) : undefined;
 
     const clarifying = s.status === 'AWAITING_CLARIFICATION';
   const r = await agenticProcessMessage({
     messageId: p.messageId, text: p.text,
     productDraftId: clarifying ? s.productDraftId : null,
     questionId: clarifying ? s.pendingQuestionId : null,
-    file,
+    file, targetChannels: p.targetChannels,
   });
 
   if (r.kind === 'clarification_required' && r.draft && r.question) {
@@ -200,14 +237,14 @@ async function processInbound(p) {
   }
 }
 
-function sendUserMessage({ text, file }) {
+async function sendUserMessage({ text, file, targetChannels }) {
   text = (text || '').trim();
   if (!text && !file) throw Object.assign(new Error('Say or type something, or attach a product photo.'), { status: 400 });
   const messageId = `dash:${randomUUID()}`;
-  const mediaId = file ? saveMedia(file.buffer, file.mimeType, file.filename) : null;
+  const mediaId = file ? await saveMedia(file.buffer, file.mimeType, file.filename) : null;
   const m = addMessage('user', text, { image: mediaId });
   addJob({ kind: 'INBOUND_MESSAGE', label: 'Thinking' }, () =>
-    processInbound({ messageId, text, mediaId }));
+    processInbound({ messageId, text, mediaId, targetChannels }));
   return m;
 }
 
@@ -230,7 +267,15 @@ function approve(id) {
     state.session.designJobId = d.externalRef;
     state.session.status = r.kind === 'approved' ? 'COMPLETE' : 'AWAITING_APPROVAL';
     d.publishResult = r;
-    if (r.kind === 'approved') addMessage('agent', '🎉 Approved. The agent has taken it from here and is publishing to the channels in your brief.');
+    if (r.kind === 'approved') {
+      const publishing = [...(r.job?.handoffs || [])].reverse().find(item => item.type === 'PUBLISHING');
+      const deliveries = publishing?.deliveries || [];
+      const delivered = deliveries.filter(item => item.status === 'DELIVERED').map(item => item.channel);
+      const failed = deliveries.filter(item => item.status === 'FAILED').map(item => item.channel);
+      const detail = delivered.length ? ` Published successfully to ${delivered.join(' and ')}.` : ' The image was approved and exported.';
+      const failure = failed.length ? ` Publishing failed for ${failed.join(' and ')}; check the status details.` : '';
+      addMessage('agent', `🎉 Approved.${detail}${failure}`);
+    }
   });
   save();
 }
@@ -253,8 +298,41 @@ function requestChanges(id, feedback) {
 }
 
 function resetSession() {
-  state.session = { status: 'COLLECTING', productDraftId: null, pendingQuestionId: null, designJobId: null };
+  state.session = { status: 'COLLECTING', productDraftId: null, pendingQuestionId: null, designJobId: null, voicePendingAction: null };
   addMessage('system', 'New brief');
+}
+
+async function handleVoiceCommand({ text, file, targetChannels }) {
+  text = String(text || '').trim();
+  const pending = state.designs.find(item => item.status === 'PENDING');
+  const session = state.session;
+  if (session.status === 'AWAITING_APPROVAL' && pending) {
+    if (/^(cancel|stop|do not publish|don't publish)$/i.test(text)) {
+      session.voicePendingAction = null;
+      addMessage('agent', 'Publishing confirmation cancelled. You can request changes or approve when ready.');
+      save();
+      return { kind: 'cancelled' };
+    }
+    if (session.voicePendingAction?.type === 'APPROVE_ALL' && /^(confirm|confirm publish|yes confirm|publish now)$/i.test(text)) {
+      session.voicePendingAction = null;
+      approve(pending.id);
+      save();
+      return { kind: 'approval_started', designId: pending.id };
+    }
+    if (/^(approve|approve it|approve and publish|publish|looks good|yes approve)(\s+it)?$/i.test(text)) {
+      session.voicePendingAction = { type: 'APPROVE_ALL', designId: pending.id, createdAt: now() };
+      addMessage('agent', 'Please say “confirm publish” to approve this design and publish it, or say “cancel”.');
+      save();
+      return { kind: 'confirmation_required', designId: pending.id };
+    }
+    const feedback = text.replace(/^(change|edit|revise|please change|please edit)\s*/i, '').trim();
+    if (feedback) {
+      session.voicePendingAction = null;
+      requestChanges(pending.id, feedback);
+      return { kind: 'revision_started', designId: pending.id };
+    }
+  }
+  return { kind: 'message_started', message: await sendUserMessage({ text, file, targetChannels }) };
 }
 
 /* ------------------------------------------------------------------ server */
@@ -286,7 +364,7 @@ const handlePreview = async (req, res) => {
     if (!design) {
       design = {
         id: state.dseq++, handoffKey, externalRef: meta.designJobId, status: 'PENDING',
-        mimeType: file.mimetype, mediaId: saveMedia(file.buffer, file.mimetype, file.originalname || 'preview'),
+        mimeType: file.mimetype, mediaId: await saveMedia(file.buffer, file.mimetype, file.originalname || 'preview'),
         revision: meta.revisionNumber || 1, feedback: null, createdAt: now(), respondedAt: null,
         caption: meta.revisionNumber > 1
           ? `Your revised design (version ${meta.revisionNumber}) is ready. Do you approve it?`
@@ -296,7 +374,7 @@ const handlePreview = async (req, res) => {
       state.session.designJobId = meta.designJobId;
       state.session.status = 'AWAITING_APPROVAL';
       save();
-      console.log(`🎨 Preview received for job ${meta.designJobId}`);
+      logEvent('dashboard.preview.received', { designJobId: meta.designJobId, revision: meta.revisionNumber || 1, bytes: file.size });
     }
     res.json({ success: true, designId: design.id, status: design.status, handoffKey });
   } catch (e) {
@@ -304,8 +382,7 @@ const handlePreview = async (req, res) => {
     res.status(400).json({ error: e.message });
   }
 };
-// Both paths work, so you only have to change the host in Agentic's preview URL.
-app.post(['/integrations/agentic/previews', '/whatsapp/integrations/agentic/previews'], upload.any(), handlePreview);
+app.post('/integrations/agentic/previews', upload.any(), handlePreview);
 
 app.use(express.json());
 
@@ -333,23 +410,31 @@ api.get('/state', (_req, res) => {
     jobs: state.jobs.slice(0, 40),
   });
 });
-api.post('/messages', upload.single('image'), wrap((req, res) => {
+api.post('/messages', upload.single('image'), wrap(async (req, res) => {
   const f = req.file;
   if (f && !['image/png', 'image/jpeg', 'image/webp'].includes(f.mimetype)) throw new Error('Product photo must be PNG, JPEG or WebP.');
-  const m = sendUserMessage({ text: req.body.text, file: f && { buffer: f.buffer, mimeType: f.mimetype, filename: f.originalname || 'product.jpg' } });
+  const targetChannels = JSON.parse(req.body.targetChannels || '["instagram","facebook"]');
+  const m = await sendUserMessage({ text: req.body.text, targetChannels, file: f && { buffer: f.buffer, mimeType: f.mimetype, filename: f.originalname || 'product.jpg' } });
+  logEvent('dashboard.message.accepted', { messageId: m.id, hasImage: !!f, targetChannels });
   res.json({ success: true, id: m.id });
+}));
+api.post('/voice-command', upload.single('image'), wrap(async (req, res) => {
+  const f = req.file;
+  if (f && !['image/png', 'image/jpeg', 'image/webp'].includes(f.mimetype)) throw new Error('Product photo must be PNG, JPEG or WebP.');
+  const targetChannels = JSON.parse(req.body.targetChannels || '["instagram","facebook"]');
+  logEvent('dashboard.voice.transcript', { textLength: String(req.body.text || '').length, hasImage: !!f, targetChannels });
+  const result = await handleVoiceCommand({ text: req.body.text, targetChannels, file: f && { buffer: f.buffer, mimeType: f.mimetype, filename: f.originalname || 'product.jpg' } });
+  res.json({ success: true, ...result });
 }));
 api.post('/designs/:id/approve', wrap((req, res) => { approve(req.params.id); res.json({ success: true }); }));
 api.post('/designs/:id/changes', wrap((req, res) => { requestChanges(req.params.id, req.body?.feedback); res.json({ success: true }); }));
 api.post('/reset', wrap((_req, res) => { resetSession(); res.json({ success: true }); }));
-api.get('/media/:id', wrap((req, res) => {
-  const meta = state.media[req.params.id];
-  if (!meta) return res.status(404).json({ error: 'Not found' });
-  const file = path.join(MEDIA_DIR, String(req.params.id));
-  if (req.query.download) res.setHeader('Content-Disposition', `attachment; filename="${String(meta.filename).replace(/[^\w.\- ]/g, '_')}"`);
+api.get('/media/:id', wrap(async (req, res) => {
+  const mediaFile = await readMedia(req.params.id);
+  if (req.query.download) res.setHeader('Content-Disposition', `attachment; filename="${String(mediaFile.filename).replace(/[^\w.\- ]/g, '_')}"`);
   res.setHeader('Cache-Control', 'private, max-age=86400');
-  res.type(meta.mimeType);
-  res.sendFile(file, { acceptRanges: true, headers: { 'Content-Type': meta.mimeType } });
+  res.type(mediaFile.mimeType);
+  res.send(mediaFile.buffer);
 }));
 app.use('/api', api);
 
@@ -358,9 +443,14 @@ app.get('/health', (_req, res) => res.send('OK'));
 
 // With no DASHBOARD_TOKEN the server only listens on this computer.
 const host = cfg.dashboardToken ? '0.0.0.0' : '127.0.0.1';
-app.listen(cfg.port, host, () => {
-  console.log(`🎙️  Design Studio running:  http://localhost:${cfg.port}`);
-  console.log(`🔗 Agentic: ${cfg.agenticUrl}   merchantId: "${cfg.merchantId}"`);
-  console.log(`📥 Point Agentic's preview handoff at:  <this server's public URL>/integrations/agentic/previews`);
-  if (!cfg.dashboardToken) console.log('🔒 No DASHBOARD_TOKEN set: listening on 127.0.0.1 only.');
-});
+async function start() {
+  await initPersistence();
+  app.listen(cfg.port, host, () => {
+    console.log(`🎙️  Design Studio running:  http://localhost:${cfg.port}`);
+    console.log(`🔗 Agentic: ${cfg.agenticUrl}   merchantId: "${cfg.merchantId}"`);
+    console.log(`📥 Agentic dashboard handoff: <this server's public URL>/integrations/agentic/previews`);
+    console.log(`💾 Persistence: ${pool ? 'PostgreSQL' : cfg.dataDir}`);
+    if (!cfg.dashboardToken) console.log('🔒 No DASHBOARD_TOKEN set: listening on 127.0.0.1 only.');
+  });
+}
+start().catch(error => { console.error('❌ Dashboard startup failed:', error); process.exit(1); });

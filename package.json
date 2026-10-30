@@ -3,13 +3,14 @@
   "version": "1.0.0",
   "description": "Voice dashboard for the Agentic design agent (same API calls as the WhatsApp bot)",
   "main": "server.js",
-  "scripts": { "start": "node server.js", "dev": "node --watch server.js" },
+  "scripts": { "start": "node server.js", "dev": "node --watch server.js", "test": "node --test test/server.test.js" },
   "dependencies": {
     "axios": "^1.7.0",
     "dotenv": "^16.4.0",
     "express": "^4.19.2",
     "form-data": "^4.0.0",
-    "multer": "^2.0.0"
+    "multer": "^2.0.0",
+    "pg": "^8.13.1"
   },
   "engines": { "node": ">=18" }
 }
