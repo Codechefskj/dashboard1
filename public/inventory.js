@@ -119,15 +119,21 @@
     try { await request(`/inventory/campaigns/${encodeURIComponent(id)}/end`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason: 'Ended by merchant.' }) }); hasScanned = false; notice('Campaign closed.'); await refresh(true); } catch (error) { notice(error.message, true); }
   }
   async function refresh(showError = false) { try { inventory = await request('/inventory'); render(); } catch (error) { if (showError) notice(error.message, true); } }
-  function startPolling() { clearTimeout(refreshTimer); if (!active) return; const busy = inventory?.campaigns.some(campaign => ['GENERATING', 'PUBLISHING'].includes(campaign.status)); refreshTimer = setTimeout(async () => { await refresh(); startPolling(); }, busy ? 1400 : 5000); }
+  function startPolling() {
+    clearTimeout(refreshTimer);
+    if (!active) return;
+    const busy = inventory?.campaigns.some(campaign => ['GENERATING', 'PUBLISHING'].includes(campaign.status));
+    if (!busy) return;
+    refreshTimer = setTimeout(async () => { await refresh(); startPolling(); }, 1400);
+  }
   function setMode(mode) {
     active = mode === 'inventory'; $('main').classList.toggle('hidden', active); $('inventoryPage').classList.toggle('hidden', !active); $('modeVoice').classList.toggle('active', !active); $('modeInventory').classList.toggle('active', active);
     for (const id of ['newBrief', 'voiceReplyBtn', 'replayBtn']) $(id)?.classList.toggle('hidden', active);
-    if (active) { refresh(true); startPolling(); } else clearTimeout(refreshTimer);
+    if (active) refresh(true).then(startPolling); else clearTimeout(refreshTimer);
     try { localStorage.setItem('merchant.workspace', mode); } catch {}
   }
   $('modeVoice').onclick = () => setMode('voice'); $('modeInventory').onclick = () => setMode('inventory');
-  window.addEventListener('merchant:authenticated', () => { if (active) { refresh(true); startPolling(); } });
+  window.addEventListener('merchant:authenticated', () => { if (active) refresh(true).then(startPolling); });
   let preferred = 'voice'; try { preferred = localStorage.getItem('merchant.workspace') || 'voice'; } catch {}
   if (preferred === 'inventory') setTimeout(() => setMode('inventory'), 0);
 })();

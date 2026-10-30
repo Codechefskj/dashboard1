@@ -33,6 +33,7 @@ const cfg = {
   dataDir: path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data')),
   databaseUrl: process.env.DATABASE_URL || '',
   databaseSsl: String(process.env.DATABASE_SSL || 'true').toLowerCase() !== 'false',
+  seedInventoryOnEmpty: String(process.env.SEED_INVENTORY_ON_EMPTY || 'true').toLowerCase() === 'true',
 };
 if (!cfg.agenticUrl || !cfg.serviceToken) {
   console.error('❌ Set AGENTIC_API_URL and INTERNAL_SERVICE_TOKEN in .env (copy .env.example).');
@@ -101,18 +102,22 @@ async function initPersistence() {
 }
 
 let saveTimer = null;
+async function persistState() {
+  if (pool) {
+    await pool.query("INSERT INTO dashboard_state (id, payload, updated_at) VALUES ('main', $1::jsonb, NOW()) ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW()", [JSON.stringify(state)]);
+  } else {
+    fs.writeFileSync(STATE_FILE + '.tmp', JSON.stringify(state));
+    fs.renameSync(STATE_FILE + '.tmp', STATE_FILE);
+  }
+}
 function save() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(async () => {
-    try {
-      if (pool) {
-        await pool.query("INSERT INTO dashboard_state (id, payload, updated_at) VALUES ('main', $1::jsonb, NOW()) ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW()", [JSON.stringify(state)]);
-      } else {
-        fs.writeFileSync(STATE_FILE + '.tmp', JSON.stringify(state));
-        fs.renameSync(STATE_FILE + '.tmp', STATE_FILE);
-      }
-    } catch (e) { console.error('⚠️ Could not save state:', e.message); }
-  }, 200);
+  saveTimer = setTimeout(() => persistState().catch(e => console.error('⚠️ Could not save state:', e.message)), 200);
+}
+async function flushSave() {
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  await persistState();
 }
 const nid = () => state.seq++;
 const now = () => new Date().toISOString();
@@ -587,6 +592,38 @@ function parseCsv(text) {
   const headers = split(rows.shift()).map(item => item.toLowerCase().replace(/[\s_-]+/g, ''));
   return rows.map(line => Object.fromEntries(split(line).map((value, index) => [headers[index], value])));
 }
+function importInventoryCsvText(text) {
+  const snapshot = JSON.parse(JSON.stringify(state.inventory));
+  let imported = 0;
+  try {
+    for (const row of parseCsv(text)) {
+      const product = addProduct({
+        name: row.name || row.productname, sku: row.sku || row.barcode, brand: row.brand,
+        category: row.category, description: row.description, price: row.price,
+        costPrice: row.costprice, minimumPrice: row.minimumprice,
+      });
+      addBatch(product.id, {
+        batchNumber: row.batchnumber, quantity: row.quantity, expiryDate: row.expirydate,
+        manufacturingDate: row.manufacturingdate, supplier: row.supplier, location: row.location,
+      });
+      imported++;
+    }
+  } catch (error) {
+    state.inventory = snapshot;
+    throw new Error(`CSV import stopped at row ${imported + 2}: ${error.message}`);
+  }
+  save();
+  return imported;
+}
+async function seedInventoryIfEmpty() {
+  if (!cfg.seedInventoryOnEmpty || state.inventory.products.length) return 0;
+  const seedPath = path.join(__dirname, 'public', 'inventory-seed-250.csv');
+  if (!fs.existsSync(seedPath)) throw new Error(`Inventory seed file is missing: ${seedPath}`);
+  const imported = importInventoryCsvText(fs.readFileSync(seedPath, 'utf8'));
+  await flushSave();
+  logEvent('inventory.seed.completed', { imported, provider: pool ? 'postgres' : 'filesystem' });
+  return imported;
+}
 const OFFER_TYPES = ['PERCENT_OFF', 'FIXED_PRICE', 'BUY_X_GET_Y', 'MULTIBUY'];
 function normalizeOffer(input, product, batch, recommendation) {
   const type = OFFER_TYPES.includes(input.offerType) ? input.offerType : 'PERCENT_OFF';
@@ -847,26 +884,9 @@ api.patch('/inventory/batches/:id', wrap((req, res) => {
 api.post('/inventory/import', upload.single('csv'), wrap(async (req, res) => {
   if (!req.file) throw Object.assign(new Error('Choose a CSV file.'), { status: 400 });
   if (req.file.size > 2 * 1024 * 1024) throw Object.assign(new Error('CSV file must be under 2 MB.'), { status: 400 });
-  const snapshot = JSON.parse(JSON.stringify(state.inventory));
-  let imported = 0;
-  try {
-    for (const row of parseCsv(req.file.buffer.toString('utf8'))) {
-      const product = addProduct({
-        name: row.name || row.productname, sku: row.sku || row.barcode, brand: row.brand,
-        category: row.category, description: row.description, price: row.price,
-        costPrice: row.costprice, minimumPrice: row.minimumprice,
-      });
-      addBatch(product.id, {
-        batchNumber: row.batchnumber, quantity: row.quantity, expiryDate: row.expirydate,
-        manufacturingDate: row.manufacturingdate, supplier: row.supplier, location: row.location,
-      });
-      imported++;
-    }
-  } catch (error) {
-    state.inventory = snapshot;
-    throw new Error(`CSV import stopped at row ${imported + 2}: ${error.message}`);
-  }
-  save(); res.status(201).json({ imported });
+  const imported = importInventoryCsvText(req.file.buffer.toString('utf8'));
+  await flushSave();
+  res.status(201).json({ imported });
 }));
 api.put('/inventory/rules', wrap((req, res) => {
   const current = state.inventory.rules;
@@ -984,6 +1004,7 @@ app.get('/health', (_req, res) => res.send('OK'));
 const host = cfg.dashboardToken ? '0.0.0.0' : '127.0.0.1';
 async function start() {
   await initPersistence();
+  await seedInventoryIfEmpty();
   app.listen(cfg.port, host, () => {
     console.log(`🎙️  Design Studio running:  http://localhost:${cfg.port}`);
     console.log(`🔗 Agentic: ${cfg.agenticUrl}   merchantId: "${cfg.merchantId}"`);
