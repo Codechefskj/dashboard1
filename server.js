@@ -46,8 +46,8 @@ const STATE_FILE = path.join(cfg.dataDir, 'state.json');
 fs.mkdirSync(MEDIA_DIR, { recursive: true });
 
 const blank = () => ({
-  seq: 1, dseq: 1, messages: [], designs: [], jobs: [], media: {},
-  session: { status: 'COLLECTING', productDraftId: null, pendingQuestionId: null, designJobId: null, voicePendingAction: null },
+  seq: 1, dseq: 1, messages: [], designs: [], videos: [], jobs: [], media: {},
+  session: { status: 'COLLECTING', productDraftId: null, pendingQuestionId: null, designJobId: null, videoJobId: null, voicePendingAction: null },
   inventory: {
     products: [], batches: [], movements: [], campaigns: [],
     rules: {
@@ -65,6 +65,7 @@ let pool = cfg.databaseUrl ? new Pool({ connectionString: cfg.databaseUrl, ssl: 
 function normalizeLoadedState(value) {
   state = { ...blank(), ...(value || {}) };
   state.session = { ...blank().session, ...(state.session || {}) };
+  if (!Array.isArray(state.videos)) state.videos = [];
   state.inventory = { ...blank().inventory, ...(state.inventory || {}) };
   state.inventory.rules = { ...blank().inventory.rules, ...(state.inventory.rules || {}) };
   for (const key of ['products', 'batches', 'movements', 'campaigns']) {
@@ -183,6 +184,34 @@ async function agenticFeedback({ externalRef, action, feedback, messageId }) {
     { headers: { ...authHeader, 'Content-Type': 'application/json', 'idempotency-key': messageId }, timeout: cfg.timeoutMs },
   );
   return res.data;
+}
+
+async function agenticVideo(pathname, body = {}, method = 'POST') {
+  const res = await axios({
+    method,
+    url: `${cfg.agenticUrl}${pathname}`,
+    data: method === 'GET' ? undefined : body,
+    headers: { ...authHeader, 'Content-Type': 'application/json' },
+    timeout: cfg.timeoutMs,
+  });
+  return res.data;
+}
+
+async function createGeminiVideo({ text, targetChannels }) {
+  const result = await agenticVideo('/api/gemini-video/jobs', {
+    merchantId: cfg.merchantId,
+    conversationId: `dashboard:${cfg.merchantId}:video:${randomUUID()}`,
+    sourceChannel: 'dashboard',
+    instructions: String(text || '').trim(),
+    productName: 'Merchant product',
+    targetChannels: Array.isArray(targetChannels) ? targetChannels : ['instagram', 'facebook'],
+  });
+  state.videos.unshift({ ...result, externalRef: result.id });
+  state.session.videoJobId = result.id;
+  state.session.status = 'VIDEO_GENERATING';
+  addMessage('agent', '🎬 Qwen is preparing the story, then the local Gemini worker will generate the complete video. Chrome can remain minimized.');
+  save();
+  return result;
 }
 
 /* -------------------------------------------------- durable-ish job queue */
@@ -354,12 +383,18 @@ function requestChanges(id, feedback) {
 }
 
 function resetSession() {
-  state.session = { status: 'COLLECTING', productDraftId: null, pendingQuestionId: null, designJobId: null, voicePendingAction: null };
+  state.session = { status: 'COLLECTING', productDraftId: null, pendingQuestionId: null, designJobId: null, videoJobId: null, voicePendingAction: null };
   addMessage('system', 'New brief');
 }
 
 async function handleVoiceCommand({ text, file, targetChannels }) {
   text = String(text || '').trim();
+  if (/\b(generate|create|make|produce)\b[\s\S]{0,80}\bvideo\b|\bvideo\b[\s\S]{0,80}\b(generate|create|make|produce)\b/i.test(text)) {
+    if (file) addMessage('agent', 'The Gemini video path does not call the image pipeline. It will use the written product instructions only.');
+    addMessage('user', text, { note: 'Gemini video request' });
+    const video = await createGeminiVideo({ text, targetChannels });
+    return { kind: 'video_queued', videoJobId: video.id };
+  }
   // Inventory campaigns have their own approval screen and safety checks. Never let
   // the general voice flow approve or revise one by accidentally finding it here.
   const pending = state.designs.find(item => item.status === 'PENDING' && !item.campaignId);
@@ -749,6 +784,7 @@ function assertCampaignPublishable(campaign) {
 /* ------------------------------------------------------------------ server */
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
+app.use(express.json({ limit: '2mb' }));
 const safeEq = (a, b) => {
   const x = Buffer.from(String(a)), y = Buffer.from(String(b));
   return x.length === y.length && timingSafeEqual(x, y);
@@ -758,9 +794,27 @@ const safeEq = (a, b) => {
 const handlePreview = async (req, res) => {
   if (!safeEq(req.header('authorization') || '', `Bearer ${cfg.serviceToken}`)) return res.status(401).json({ error: 'Unauthorized' });
   try {
-    const meta = JSON.parse(String(req.body.metadata || '{}'));
+    const meta = req.is('application/json') ? req.body : JSON.parse(String(req.body.metadata || '{}'));
+    if (meta.event === 'video.preview_ready') {
+      if (String(meta.merchantId || '') !== cfg.merchantId) return res.status(404).json({ error: 'This video belongs to a different merchant.' });
+      let video = state.videos.find(item => item.externalRef === meta.videoJobId || item.id === meta.videoJobId);
+      if (!video) {
+        video = { id: meta.videoJobId, externalRef: meta.videoJobId, createdAt: meta.createdAt || now() };
+        state.videos.unshift(video);
+      }
+      Object.assign(video, {
+        status: 'AWAITING_APPROVAL', video: meta.video, caption: meta.caption || '',
+        targetChannels: meta.targetChannels || [], updatedAt: meta.updatedAt || now(), error: null,
+      });
+      state.session.videoJobId = meta.videoJobId;
+      state.session.status = 'VIDEO_AWAITING_APPROVAL';
+      addMessage('agent', 'Your original Gemini video is ready. Review it and approve before anything is published.');
+      save();
+      logEvent('dashboard.video.preview.received', { videoJobId: meta.videoJobId, bytes: meta.video?.byteLength, sha256: meta.video?.sha256 });
+      return res.json({ success: true, videoJobId: meta.videoJobId });
+    }
     if (meta.event !== 'design.preview_ready') {
-      return res.status(400).json({ error: 'Only image design previews are accepted by this endpoint.' });
+      return res.status(400).json({ error: 'Only image or video preview events are accepted by this endpoint.' });
     }
     if (String(meta.merchantId || '') !== cfg.merchantId) {
       return res.status(404).json({ error: `merchantId "${meta.merchantId}" is not this dashboard (expected "${cfg.merchantId}").` });
@@ -809,8 +863,6 @@ const handlePreview = async (req, res) => {
 };
 app.post('/integrations/agentic/previews', upload.any(), handlePreview);
 
-app.use(express.json());
-
 /* --- dashboard API --- */
 const api = express.Router();
 api.get('/config', (_req, res) => res.json({ authRequired: !!cfg.dashboardToken, merchantId: cfg.merchantId }));
@@ -832,9 +884,41 @@ api.get('/state', (_req, res) => {
     session: state.session,
     messages: state.messages.slice(-200),
     designs: state.designs.filter(item => !item.campaignId).slice(0, 60).map(({ publishResult, handoffKey, ...d }) => d),
+    videos: state.videos.slice(0, 30),
     jobs: state.jobs.slice(0, 40),
   });
 });
+api.get('/videos', wrap(async (_req, res) => {
+  const remote = await agenticVideo(`/api/gemini-video/jobs?merchantId=${encodeURIComponent(cfg.merchantId)}`, {}, 'GET');
+  state.videos = remote.jobs || [];
+  save(); res.json({ videos: state.videos });
+}));
+api.post('/videos', wrap(async (req, res) => {
+  const video = await createGeminiVideo({ text: req.body.instructions, targetChannels: req.body.targetChannels });
+  res.status(202).json({ video });
+}));
+api.post('/videos/:id/approve', wrap(async (req, res) => {
+  if (req.body.confirm !== true) throw Object.assign(new Error('Explicit publish confirmation is required.'), { status: 400 });
+  const result = await agenticVideo(`/api/gemini-video/jobs/${encodeURIComponent(req.params.id)}/approve`, { confirm: true, approvedBy: cfg.merchantId });
+  const video = state.videos.find(item => item.externalRef === req.params.id || item.id === req.params.id);
+  if (video) Object.assign(video, result);
+  state.session.status = result.status === 'PUBLISHED' ? 'COMPLETE' : 'VIDEO_REVIEW_COMPLETE';
+  addMessage('agent', result.status === 'PUBLISHED' ? '✅ The exact Gemini video was published.' : `Video approval finished with status: ${result.status}.`);
+  save(); res.json({ video: result });
+}));
+api.post('/videos/:id/reject', wrap(async (req, res) => {
+  const result = await agenticVideo(`/api/gemini-video/jobs/${encodeURIComponent(req.params.id)}/reject`, { reason: req.body.reason || 'Rejected by merchant.' });
+  const video = state.videos.find(item => item.externalRef === req.params.id || item.id === req.params.id);
+  if (video) Object.assign(video, result);
+  save(); res.json({ video: result });
+}));
+api.post('/videos/:id/retry', wrap(async (req, res) => {
+  const result = await agenticVideo(`/api/gemini-video/jobs/${encodeURIComponent(req.params.id)}/retry`, {});
+  const video = state.videos.find(item => item.externalRef === req.params.id || item.id === req.params.id);
+  if (video) Object.assign(video, result);
+  addMessage('agent', 'A new Gemini generation has been queued.');
+  save(); res.status(202).json({ video: result });
+}));
 api.get('/inventory', (_req, res) => { reconcileCampaignSafety(); res.json(publicInventory()); });
 api.post('/inventory/products', upload.single('image'), wrap(async (req, res) => {
   const file = req.file;

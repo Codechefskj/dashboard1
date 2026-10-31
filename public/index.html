@@ -303,6 +303,10 @@ input[type="checkbox"]:checked:active::after { transform: translateX(11px); }
 @keyframes img-in { from { opacity: 0; } }
 .canvas .empty { width: 100%; height: 100%; display: grid; place-content: center; text-align: center; gap: 6px; padding: 32px; color: var(--ink-2); }
 .canvas .empty .big { font-size: 19px; font-weight: 600; color: var(--ink); letter-spacing: -.02em; }
+.canvas.video-canvas { aspect-ratio: 9 / 16; max-height: 66vh; width: min(100%, calc(66vh * 9 / 16)); align-self: center; background: #000; }
+.canvas video { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
+.canvas.video-canvas .empty { background: var(--surface-2); }
+.dcard.vcard .th { display: grid; place-items: center; color: var(--accent); background: var(--accent-soft); }
 .zoom { position: absolute; top: 10px; right: 10px; width: 34px; height: 34px; border-radius: 50%; background: rgba(30,30,32,.55); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); color: #fff; display: grid; place-items: center; opacity: 0; transform: scale(.85); transition: opacity .25s, transform .4s var(--spring); }
 .canvas:hover .zoom, .zoom:focus-visible { opacity: 1; transform: none; }
 .sbody { display: flex; flex-direction: column; gap: 12px; }
@@ -586,7 +590,7 @@ input[type="checkbox"]:checked:active::after { transform: translateX(11px); }
   function swap(container, html) {
     const first = !seenMap.has(container), prev = seenMap.get(container) || new Set(), cur = new Set();
     container.innerHTML = html;
-    [...container.children].forEach(el => { const k = el.outerHTML; cur.add(k); if (first || prev.has(k)) el.classList.add('static'); });
+    [...container.children].forEach(el => { const k = el.dataset?.key || el.outerHTML; cur.add(k); if (first || prev.has(k)) el.classList.add('static'); });
     seenMap.set(container, cur);
   }
   const CHECK = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
@@ -606,7 +610,8 @@ input[type="checkbox"]:checked:active::after { transform: translateX(11px); }
   let token = store.get('vs.token') || '';
   let authRequired = false;
   let seenDesigns = null;
-  let S = null, lastSig = '', pickedId = null, picked = false, changesFor = null;
+  let S = null, lastSig = '', pickedId = null, pickedVideoId = null, picked = false, changesFor = null;
+  let seenVideos = null;
   let file = null, sending = false, online = true, timer = null;
   let lang = store.get('vs.lang') || 'en-IN';
   let channels = new Set(JSON.parse(store.get('vs.channels') || '[]'));
@@ -856,6 +861,7 @@ input[type="checkbox"]:checked:active::after { transform: translateX(11px); }
     else if (live.length) { pill.classList.add('working'); text = live[0].label ? live[0].label + '…' : 'Working…'; }
     else if (failed) { pill.classList.add('error'); text = 'Last request failed'; title = failed.lastError || ''; }
     else if (S?.session?.status === 'AWAITING_APPROVAL' && !(S.designs || []).some(d => d.status === 'PENDING')) { pill.classList.add('working'); text = 'Rendering preview…'; }
+    else if (S?.session?.status === 'VIDEO_GENERATING') { pill.classList.add('working'); text = 'Generating video…'; }
     $('pillText').textContent = text; pill.title = title;
     return live.length > 0 || pill.classList.contains('working');
   }
@@ -863,9 +869,9 @@ input[type="checkbox"]:checked:active::after { transform: translateX(11px); }
   /* ---------- render: chat ---------- */
   function renderChat(busy) {
     const th = $('thread'), atBottom = th.scrollHeight - th.scrollTop - th.clientHeight < 90;
-    const msgs = S.messages || [], designs = S.designs || [];
+    const msgs = S.messages || [], designs = S.designs || [], videos = S.videos || [];
     const inner = $('inner');
-    if (!msgs.length && !designs.length) {
+    if (!msgs.length && !designs.length && !videos.length) {
       swap(inner, `<div class="hero">
         <span class="orb-art big" aria-hidden="true"></span>
         <h2>Describe your post.<br>We’ll design it.</h2>
@@ -877,6 +883,7 @@ input[type="checkbox"]:checked:active::after { transform: translateX(11px); }
     const items = [
       ...msgs.map(m => ({ t: new Date(m.createdAt).getTime(), m })),
       ...designs.map(d => ({ t: new Date(d.createdAt).getTime(), d })),
+      ...videos.map(v => ({ t: new Date(v.createdAt).getTime(), v })),
     ].sort((a, b) => a.t - b.t);
     const lastAgentIdx = items.map(i => i.m && i.m.role === 'agent' && i.m.options?.length ? 1 : 0).lastIndexOf(1);
     let html = '', day = '';
@@ -894,18 +901,26 @@ input[type="checkbox"]:checked:active::after { transform: translateX(11px); }
           ? `<div class="opts">${m.options.map(o => `<button class="opt" data-o="${esc(o)}">${esc(o)}</button>`).join('')}</div>` : '';
         html += `<div class="row ${mine ? 'user' : 'agent'}"><div style="min-width:0;display:flex;flex-direction:column;align-items:${mine ? 'flex-end' : 'flex-start'};max-width:100%"><div class="bubble ${m.error ? 'err' : ''}">${m.note ? `<div class="note">${esc(m.note)}</div>` : ''}${m.image ? `<img class="shot" src="${media(m.image)}" alt="Product photo">` : ''}${esc(text)}${tags}${opts}</div>
           <div class="meta">${clock(m.createdAt)}</div></div></div>`;
-      } else {
+      } else if (it.d) {
         const d = it.d, st = dstatus(d);
         html += `<div class="row agent">
           <button class="dcard ${d.id === pickedId ? 'active' : ''}" data-id="${d.id}">
             <div class="th"><img src="${media(d.mediaId)}" alt=""></div>
             <div><div class="t">Design #${d.id}${d.revision > 1 ? ` · v${d.revision}` : ''} is ready</div><div class="s">${esc(d.caption || '')}</div><div style="margin-top:6px"><span class="chip ${st.cls}">${st.label}</span></div></div>
           </button></div>`;
+      } else {
+        const v = it.v, ready = v.status === 'AWAITING_APPROVAL';
+        html += `<div class="row agent" data-key="video-${esc(v.id)}">
+          <button class="dcard vcard ${v.id === pickedVideoId ? 'active' : ''}" data-video-id="${esc(v.id)}">
+            <div class="th"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m10 9 5 3-5 3Z" fill="currentColor"/></svg></div>
+            <div><div class="t">Gemini video</div><div class="s">${esc(v.progress?.message || v.status || 'Queued')}</div><div style="margin-top:6px"><span class="chip ${ready ? 'pending' : 'muted'}">${esc(vlabel(v.status))}</span></div></div>
+          </button></div>`;
       }
     });
     if (busy) html += `<div class="row agent"><div class="bubble"><span class="typing"><i></i><i></i><i></i></span></div></div>`;
     swap(inner, html);
-    inner.querySelectorAll('.dcard').forEach(c => c.onclick = () => { pick(Number(c.dataset.id)); setTab('review'); });
+    inner.querySelectorAll('.dcard:not(.vcard)').forEach(c => c.onclick = () => { pick(Number(c.dataset.id)); setTab('review'); });
+    inner.querySelectorAll('.vcard').forEach(c => c.onclick = () => { pickVideo(c.dataset.videoId); setTab('review'); });
     inner.querySelectorAll('.opt').forEach(o => o.onclick = () => send(o.dataset.o));
     if (atBottom) th.scrollTop = th.scrollHeight;
   }
@@ -917,13 +932,18 @@ input[type="checkbox"]:checked:active::after { transform: translateX(11px); }
     if (picked && ds.some(d => d.id === pickedId)) return ds.find(d => d.id === pickedId);
     return ds.find(d => d.status === 'PENDING') || ds[0];
   }
-  function pick(id) { pickedId = id; picked = true; renderReview(); renderChatSoon(); }
+  function pick(id) { pickedId = id; pickedVideoId = null; picked = true; renderReview(); renderChatSoon(); }
+  function pickVideo(id) { pickedVideoId = id; picked = false; renderReview(); renderChatSoon(); }
   const renderChatSoon = () => { if (S) renderChat(renderPill()); };
 
   function renderReview() {
-    const ds = S.designs || [], waiting = ds.filter(d => d.status === 'PENDING').length;
-    $('count').textContent = waiting ? `${waiting} waiting` : ds.length ? 'All caught up' : '';
+    const ds = S.designs || [], videos = S.videos || [];
+    const waiting = ds.filter(d => d.status === 'PENDING').length + videos.filter(v => v.status === 'AWAITING_APPROVAL').length;
+    $('count').textContent = waiting ? `${waiting} waiting` : (ds.length || videos.length) ? 'All caught up' : '';
     $('reviewTab').textContent = waiting ? `Review (${waiting})` : 'Review';
+    const awaitingVideo = videos.find(v => v.status === 'AWAITING_APPROVAL');
+    const selectedVideo = videos.find(v => v.id === pickedVideoId) || (!picked ? (awaitingVideo || (ds.length ? null : videos[0]) || null) : null);
+    if (selectedVideo) { renderVideoReview(selectedVideo); return; }
     const d = current(); pickedId = d?.id ?? null;
     const stage = $('stage');
     if (!d) {
@@ -973,6 +993,46 @@ input[type="checkbox"]:checked:active::after { transform: translateX(11px); }
     $('history').querySelectorAll('.tile').forEach(t => t.onclick = () => pick(Number(t.dataset.id)));
   }
 
+  const vlabel = s => s === 'AWAITING_APPROVAL' ? 'Needs your review' : String(s || 'Queued').replace(/_/g, ' ').toLowerCase().replace(/^./, c => c.toUpperCase());
+  function renderVideoReview(v) {
+    const stage = $('stage');
+    const ready = v.status === 'AWAITING_APPROVAL';
+    const terminal = ['PUBLISHED', 'PARTIALLY_PUBLISHED', 'PUBLISH_FAILED', 'APPROVED', 'REJECTED', 'FAILED'].includes(v.status);
+    const video = v.video?.publicUrl
+      ? `<div class="canvas video-canvas"><video controls playsinline preload="metadata" src="${esc(v.video.publicUrl)}"></video></div>`
+      : `<div class="canvas video-canvas"><div class="empty"><div class="big">${terminal ? 'Video unavailable' : 'Gemini is working'}</div><div>${esc(v.progress?.message || v.error || v.status || 'Waiting for the local worker.')}</div></div></div>`;
+    const actions = ready ? `<div class="actions">
+        <button class="btn btn-approve" data-vact="approve">${CHECK.replace('width="11" height="11"', 'width="18" height="18"')}Approve &amp; publish exact video</button>
+        <button class="btn btn-ghost" data-vact="retry">Generate another</button>
+        <button class="btn btn-ghost" data-vact="reject">Reject</button>
+      </div>` : `<div class="flowlist"><div class="st ${terminal ? 'done' : 'live'}"><span class="ic">${terminal ? CHECK : ''}</span>${esc(v.progress?.message || v.status)}</div></div>`;
+    stage.innerHTML = `${video}<div class="sbody"><div class="stop"><b>Original Gemini video</b><span class="chip ${ready ? 'pending' : 'muted'}">${esc(vlabel(v.status))}</span></div>
+      ${v.caption ? `<p class="cap">${esc(v.caption)}</p>` : ''}${actions}
+      ${v.video?.sha256 ? `<div class="meta">Unchanged MP4 · SHA-256 ${esc(v.video.sha256.slice(0, 16))}…</div>` : ''}
+      ${v.error ? `<div class="errnote">${esc(v.error)}</div>` : ''}</div>`;
+    stage.querySelectorAll('[data-vact]').forEach(button => button.onclick = () => actVideo(button.dataset.vact, v));
+    $('history').innerHTML = '';
+  }
+
+  async function actVideo(action, video) {
+    try {
+      if (action === 'approve') {
+        const message = 'The exact Gemini video will be published to the selected Instagram and Facebook accounts.';
+        const ok = window.merchantConfirm ? await window.merchantConfirm('Publish this video?', message, 'Approve & publish') : confirm(message);
+        if (!ok) return;
+        await api(`/videos/${encodeURIComponent(video.id)}/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: true }) });
+        toast('Approved. Render is publishing the unchanged Gemini video.');
+      } else if (action === 'retry') {
+        await api(`/videos/${encodeURIComponent(video.id)}/retry`, { method: 'POST' });
+        toast('A new Gemini generation was queued.');
+      } else if (action === 'reject') {
+        await api(`/videos/${encodeURIComponent(video.id)}/reject`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason: 'Rejected from dashboard.' }) });
+        toast('Video rejected. Nothing was published.');
+      }
+      await refresh(true);
+    } catch (e) { toast(e.message, true); }
+  }
+
   async function act(a, d) {
     try {
       if (a === 'zoom') { const lb = document.createElement('div'); lb.className = 'lightbox'; lb.innerHTML = `<img src="${media(d.mediaId)}" alt="">`; const close = () => { document.removeEventListener('keydown', onKey); lb.remove(); }, onKey = e => e.key === 'Escape' && close(); lb.onclick = close; document.addEventListener('keydown', onKey); document.body.appendChild(lb); return; }
@@ -997,15 +1057,25 @@ input[type="checkbox"]:checked:active::after { transform: translateX(11px); }
     const fresh = ds.filter(d => !seenDesigns.has(d.id) && d.status === 'PENDING');
     ids.forEach(id => seenDesigns.add(id));
     if (!fresh.length) return;
-    pickedId = fresh[fresh.length - 1].id; picked = true; changesFor = null; lastSig = '';
+    pickedId = fresh[fresh.length - 1].id; pickedVideoId = null; picked = true; changesFor = null; lastSig = '';
     setTab('review'); toast('Your design is ready for review.');
+    const panel = $('review'); panel.classList.remove('fresh'); void panel.offsetWidth; panel.classList.add('fresh');
+  }
+  function openNewVideo() {
+    const vs = S.videos || [], first = !seenVideos;
+    if (first) seenVideos = new Map();
+    let fresh = null;
+    vs.forEach(v => { if (!first && v.status === 'AWAITING_APPROVAL' && seenVideos.get(v.id) !== 'AWAITING_APPROVAL') fresh = v; seenVideos.set(v.id, v.status); });
+    if (!fresh) return;
+    pickedVideoId = fresh.id; picked = false; changesFor = null; lastSig = '';
+    setTab('review'); toast('Your video is ready for review.');
     const panel = $('review'); panel.classList.remove('fresh'); void panel.offsetWidth; panel.classList.add('fresh');
   }
   function render(force) {
     if (!S) return;
-    openNewDesign();
+    openNewDesign(); openNewVideo();
     const busy = renderPill();
-    const sig = JSON.stringify([S.messages.map(m => m.id), S.designs.map(d => [d.id, d.status]), S.jobs.map(j => [j.id, j.status, j.attempts]), pickedId, picked, changesFor, S.session?.status, busy]);
+    const sig = JSON.stringify([S.messages.map(m => m.id), S.designs.map(d => [d.id, d.status]), (S.videos || []).map(v => [v.id, v.status, v.progress?.percent]), S.jobs.map(j => [j.id, j.status, j.attempts]), pickedId, pickedVideoId, picked, changesFor, S.session?.status, busy]);
     if (!force && sig === lastSig) return;
     lastSig = sig;
     renderChat(busy);

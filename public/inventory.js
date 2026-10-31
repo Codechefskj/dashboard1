@@ -36,6 +36,7 @@
     });
   }
   const confirmSheet = (title, message, confirmLabel) => sheet({ title, message, confirmLabel }).then(Boolean);
+  window.merchantConfirm = confirmSheet;
 
   /* ---------- helpers ---------- */
   const media = id => `/api/media/${encodeURIComponent(id)}?token=${encodeURIComponent(token())}`;
