@@ -18,8 +18,9 @@ services:
         sync: false
       - key: INTERNAL_SERVICE_TOKEN
         sync: false
-      - key: DASHBOARD_TOKEN
-        sync: false
+      # Leave DASHBOARD_TOKEN unset/empty so the dashboard opens without a password.
+      - key: OPEN_ACCESS
+        value: "true"
       - key: DASHBOARD_MERCHANT_ID
         value: dashboard
       - key: DATABASE_URL

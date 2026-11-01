@@ -1084,8 +1084,10 @@ app.use('/api', api);
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('/health', (_req, res) => res.send('OK'));
 
-// With no DASHBOARD_TOKEN the server only listens on this computer.
-const host = cfg.dashboardToken ? '0.0.0.0' : '127.0.0.1';
+// Public by default: no token needed. Set DASHBOARD_TOKEN to require a password,
+// or OPEN_ACCESS=false (with no token) to listen on this computer only.
+const openAccess = process.env.OPEN_ACCESS !== 'false';
+const host = (cfg.dashboardToken || openAccess) ? '0.0.0.0' : '127.0.0.1';
 async function start() {
   await initPersistence();
   await seedInventoryIfEmpty();
@@ -1094,7 +1096,7 @@ async function start() {
     console.log(`🔗 Agentic: ${cfg.agenticUrl}   merchantId: "${cfg.merchantId}"`);
     console.log(`📥 Agentic dashboard handoff: <this server's public URL>/integrations/agentic/previews`);
     console.log(`💾 Persistence: ${pool ? 'PostgreSQL' : cfg.dataDir}`);
-    if (!cfg.dashboardToken) console.log('🔒 No DASHBOARD_TOKEN set: listening on 127.0.0.1 only.');
+    if (!cfg.dashboardToken) console.log(openAccess ? '🌐 No DASHBOARD_TOKEN set: dashboard is open to anyone with the URL.' : '🔒 No DASHBOARD_TOKEN set: listening on 127.0.0.1 only.');
   });
 }
 start().catch(error => { console.error('❌ Dashboard startup failed:', error); process.exit(1); });
